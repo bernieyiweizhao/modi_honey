@@ -1,0 +1,98 @@
+---
+title: "Anlysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+```
+
+```{r, results='hide'}
+library("Seurat")
+library("monocle")
+library("DT")
+project_dir <- "C:/Users/Yiwei Zhao/Desktop/BRC/Analysis/modi_honey/"
+project_names <- c("1_Tg_plus_neg", "2_Tg_plus_pos", "3_Tg_Tg_neg", "4_Tg_Tg_pos")
+merged <- readRDS(paste0(project_dir,"merged.rds"))
+```
+
+## Overview of Data
+The table below summarizes the expression of Ins1, Ins2 and GFP.
+
+Ins1 is expressed in all cells in all 4 samples. The mean expression of Ins1 in tg_tg_neg sample is much lower than in the other 3.
+
+Ins2 is epressed in all cells in the heterozygous samples. It is expressed in some cells in the homozygous samples, but the level is much lower.
+
+GFP is expressed in most cells in GFP-pos samples and in a few cells in GFP-neg samples.
+
+```{r get gene stats}
+get_gene_stats <- function(cells, gene, data.use){
+  gene_pos_cells <- cells[data.use[gene,cells]>0]
+  stats <- c(length(gene_pos_cells),
+             median(data.use[gene,cells]),
+             mean(data.use[gene,cells]),
+             min(data.use[gene,cells]), 
+             max(data.use[gene,cells])
+             )
+  names(stats) <- c(paste0(gene,"_num_cells"),
+                    paste0(gene,"_median"),
+                    paste0(gene,"_mean"),
+                    paste0(gene,"_min"),
+                    paste0(gene,"_max")
+  )
+  return(stats)
+}
+
+table <- NULL
+genes <- c("Ins1","Ins2","SSM2GFP")
+for (project_name in project_names){
+  cells <- merged@cell.names[merged@meta.data$orig.ident == project_name]
+  row <- c(Total_num_cells = length(cells))
+  for (gene in genes){
+    row <- c(row, get_gene_stats(cells, gene, merged@raw.data))
+  }
+  
+  table <- rbind(table,row)
+  # print(c(length(cells),length(Ins1_pos_cells), length(Ins2_pos_cells), length(gfp_pos_cells)))
+}
+rownames(table) <- project_names
+# print(table)
+knitr::kable(table)
+# merged@data <- log(merged@raw.data+1)
+```
+
+The y-axis in the violin plot below is log normalized count. It seems that in each of the GFP-neg samples, there is a dinstinct group of cells that have very high expression of Ins1 (close to the level in the GFP-pos samples). 
+
+```{r}
+VlnPlot(merged, features.plot = genes, group.by = "orig.ident",x.lab.rot = T)
+```
+
+Based on the overview of the data, we plan to do the following things first:
+
+* run DE analysis on GFP(+) vs GFP(-) in each of the 2 homozygous samples. As for Ins1, since it is expressed in all cells, what criteria do you think we should use to subset Ins1(-) samples?
+
+* The expression of GFP in tg_tg_pos seems to be somewhat uniformly distributed across a range.Therefore, we can use monocle to find genes that are differentially expressed across the range (though this is usually performed on changes across time).
+
+```{r}
+# cells <- merged@cell.names[merged@meta.data$orig.ident == project_names[]]
+# plot(x = merged@data["Ins1",cells], y = merged@data["Ins2",cells])
+```
+
+
+```{r}
+# s3 <- readRDS(sprintf("%s/%s/%s", project_dir, project_names[3],paste0(project_names[3],".raw.rds")))
+# s3_cds <- importCDS(s3)
+# s3_cds <- estimateSizeFactors(s3_cds)
+# s3_cds <- estimateDispersions(s3_cds)
+
+```
+
+
+## DE analysis of tg_plus_pos vs tg_tg_pos using Seurat
+Genes with positive log_fc values are upregulated in tg_plus_pos.
+```{r DE 2vs4}
+merged <- SetAllIdent(merged, "orig.ident")
+markers <- FindMarkers(object = merged,ident.1 = "2_Tg_plus_pos", ident.2 = "4_Tg_Tg_pos")
+datatable(markers, filter = "top")
+```
+

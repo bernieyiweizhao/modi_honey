@@ -1,0 +1,267 @@
+---
+title: "Anlysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+```
+
+```{r, results='hide'}
+library("Seurat")
+library("monocle")
+library("DT")
+library("dplyr")
+library("kableExtra")
+
+project_dir <- "C:/Users/Yiwei Zhao/Desktop/BRC/Analysis/modi_honey/"
+project_names <- c("1_Tg_plus_neg", "2_Tg_plus_pos", "3_Tg_Tg_neg", "4_Tg_Tg_pos")
+```
+
+
+
+```{r compute PC on HPC, eval = F}
+merged <- readRDS(paste0(project_dir,"merged.rds"))
+merged <- CreateSeuratObject(raw.data = merged@raw.data, min.cells = 8)
+merged <- NormalizeData(merged)
+merged <- FindVariableGenes(merged)
+merged@var.genes <- row.names(head(merged@hvg.info,1000))
+merged <- ScaleData(merged)
+merged <- RunPCA(merged,pcs.compute = 30)
+saveRDS(merged, "merged.rds")
+
+```
+
+```{r load data}
+merged <- readRDS(sprintf("%s/filtered.rds",project_dir))
+```
+
+
+## Check for beta-cells {.tabset}
+This time I filtered out genes that are expressed in less than 8 cells in the combined dataset. The normalized expression may be slightly different.
+
+As seen in the table and violin plot below, most cells have some expression of Gcg, Sst or Ppy. 
+There are only `r sum(Matrix::colSums(merged@data[c("Gcg","Sst","Ppy"),]) == 0)` cells that do not express any of the 3 genes, but the expression level of these genes are much lower in the 2 GFP-pos samples.
+
+```{r get gene stats}
+get_gene_stats <- function(cells, gene, data.use){
+  gene_pos_cells <- cells[data.use[gene,cells]>0]
+  stats <- c(length(gene_pos_cells),
+             median(data.use[gene,cells]),
+             mean(data.use[gene,cells]),
+             min(data.use[gene,cells]), 
+             max(data.use[gene,cells])
+             )
+  names(stats) <- c(paste0(gene,"_num_cells"),
+                    paste0(gene,"_median"),
+                    paste0(gene,"_mean"),
+                    paste0(gene,"_min"),
+                    paste0(gene,"_max")
+  )
+  return(stats)
+}
+
+table <- NULL
+genes <- c("Ins1","Gcg", "Sst", "Ppy")
+for (project_name in project_names){
+  cells <- merged@cell.names[merged@meta.data$orig.ident == project_name]
+  row <- c(Total_num_cells = length(cells))
+  for (gene in genes){
+    row <- c(row, get_gene_stats(cells, gene, merged@raw.data))
+  }
+  
+  table <- rbind(table,row)
+  # print(c(length(cells),length(Ins1_pos_cells), length(Ins2_pos_cells), length(gfp_pos_cells)))
+}
+rownames(table) <- project_names
+# print(table)
+
+knitr::kable(table)
+
+# merged@data <- log(merged@raw.data+1)
+```
+
+
+```{r plot genes}
+VlnPlot(merged, features.plot = genes, group.by = "orig.ident",x.lab.rot = T, nCol = 4)
+```
+
+In the gene biplots below, we expect beta cells to be in the bottom right corner in each plot. For each of the GFP-pos samples, most cells are in that corner. For each of the GFP-neg samples, there is a small group of cells in that corner as well. 
+
+We want to find out which cells are in that corner and treat them as beta-cells. Since there is no distinct cutoff on some plots, we use clustering to separate the cells.
+
+```{r, results='asis'}
+for (project_name in project_names){
+  
+  cat( paste("###", project_name, '\n' ) ) 
+  
+  cells <- merged@cell.names[merged@meta.data$orig.ident == project_name]
+  par(mfrow = c(1, 3), oma = c(0, 0, 1.5, 0))
+  for (gene in c("Gcg", "Sst", "Ppy")){
+    plot(x = merged@data["Ins1",cells], y = merged@data[gene,cells], xlab = "Ins1", ylab = gene, xlim = c(0,10),ylim = c(0,10))
+  }
+  mtext(project_name, outer = TRUE)
+  
+  cat(' \n \n')
+}
+```
+
+## Unsupervised Clustering
+
+```{r view PC, eval = F}
+PCElbowPlot(merged,num.pc = 30)
+PCHeatmap(merged, pc.use = 1:8, cells.use = 500, do.balanced = T)
+```
+
+The unsupervised clustering is based on 5 PCs generated from top 1000 most variable genes.
+
+```{r}
+plot_gene_vs_ins1 <- function(){
+  for (cluster in levels(merged@ident)){
+    cat( paste("#### Cluster", cluster, '\n' ) ) 
+    
+    cells <- merged@cell.names[merged@ident == cluster]
+    par(mfrow = c(1, 3), oma = c(0, 0, 1.5, 0))
+    for (gene in c("Gcg", "Sst", "Ppy")){
+      plot(x = merged@data["Ins1",cells], y = merged@data[gene,cells], xlab = "Ins1", ylab = gene,
+           xlim = c(0,10),ylim = c(0,10))
+    }
+    
+    cat(' \n \n')
+  }
+}
+```
+
+```{r}
+plot_clusters_on_tsne <- function(genes, reduction){
+  for (cluster in levels(merged@ident)){
+    cat( paste("#### Cluster", cluster, '\n' ) ) 
+    
+    plot_list <- list()
+    cells <- merged@cell.names[merged@ident == cluster]
+    FeaturePlot(merged, features.plot = genes, cells.use = cells, reduction.use = reduction)
+    cat(' \n \n')
+  }
+}
+  
+```
+
+### Biplot {.tabset}
+Gene biplot of each cluster is shown below. 
+
+```{r, eval = T, results='asis'}
+nPC <- 5
+merged <- RunTSNE(merged, dims.use = 1:nPC)
+merged <- FindClusters(object = merged, dims.use = 1:nPC,resolution = 1, print.output = F)
+plot_gene_vs_ins1()
+```
+
+### t-SNE plot{.tabset}
+Cells are plotted on t-SNE projections generated from the 5 PCs for visualization. They are colored by expression levels of each gene (yellow is low; red is high).
+
+```{r, eval = T, results='asis'}
+plot_clusters_on_tsne(c("Ins1","Gcg", "Sst", "Ppy"),"tsne")
+```
+
+
+## Supervised Clustering
+In supervised clustering, we use the marker genes only (Ins1, Gcg, Sst, Ppy, SSM2GFP).
+
+### Biplot{.tabset}
+
+Gene biplot of each cluster is shown below. 
+
+```{r, eval = T, results='asis'}
+merged <- FindClusters(object = merged, genes.use = c("Ins1", "Gcg", "Sst", "Ppy", "SSM2GFP"), resolution = 0.6, print.output = F)
+plot_gene_vs_ins1()
+```
+
+### t-SNE plot{.tabset}
+Cells are plotted on t-SNE projections from the unsupervised clustering for visualization. They are colored by expression levels of each gene (yellow is low; red is high).
+
+```{r, eval = T, results='asis'}
+plot_clusters_on_tsne(c("Ins1","Gcg", "Sst", "Ppy"),"tsne")
+```
+
+## Select beta cells
+Based on the gene biplots, it seems that some clusters for the unsupervised clustering have most cells in the bottom right corner as well as some outliers, whereas the supervised clustering produces much cleaner results. Therefore, we will use the supervised clusters to separate the cells.
+
+Visually we can see that all cells in clusters 0,1,2,3,4,8 are in the bottom right corner of the biplots. DE analysis  confirmed that, in each of those clusters, Ins1 is upregulated (logFC > 0) and Gcg, Sst, Ppy are all downregulated (logFC < 0). Therefore, we can consider all cells clusters 0,1,2,3,4,8 as Ins1(+).
+
+As for the other cluster:
+
+Clusters 5,6,7,10 have low Ins1.
+Cluster 11 have high Ins1 but also high Gcg.
+Cluster 12 have high Ins1 but also high Sst.
+Cluster 9 doesn't seem to have distinct patter on the biplots. It may be related to GFP.
+In general, I think we can consider these cells as Ins1(-) cells for now (or at least non-beta cells). Please check the DE analysis reuslts for additional marker genes.
+
+```{r}
+# markers <- FindAllMarkers(merged)
+markers <- read.table("DE_per_cluster.tsv", header = T)
+markers$cluster <- as.factor(markers$cluster)
+datatable(markers, filter = "top", rownames = F)
+```
+
+
+```{r}
+clusters_for_beta_cells <- c("0","1","2","3","4","8")
+is_beta_cell <- merged@ident %in% clusters_for_beta_cells
+merged <- AddMetaData(object = merged, metadata = (merged@ident %in% clusters_for_beta_cells), col.name = "is_beta_cell")
+# print(head(merged@meta.data))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r, eval=F}
+#s3 <- readRDS(sprintf("%s/%s/%s", project_dir, project_names[3],paste0(project_names[3],".raw.rds")))
+# merged_cds <- importCDS(merged)
+# merged_cds <- estimateSizeFactors(merged_cds)
+# merged_cds <- estimateDispersions(merged_cds)
+
+merged_cds <- readRDS(sprintf("%s/merged_cds.rds", project_dir))
+expressed_genes <- row.names(subset(fData(merged_cds), num_cells_expressed >= 10))
+```
+
+
+```{r, eval=F}
+
+
+cth <- newCellTypeHierarchy()
+cth <- addCellType(cth, "beta_cells", classify_func = function(x){x["Ins1",] > 57})
+cth <- addCellType(cth, "Gcg+", classify_func = function(x){x["Gcg",] == 0})
+cth <- addCellType(cth, "Sst+", classify_func = function(x){x["Sst",] == 0})
+cth <- addCellType(cth, "Ppy+", classify_func = function(x){x["Ppy",] == 0})
+
+merged_cds <- classifyCells(merged_cds, cth)
+```
+
+```{r, eval = F}
+marker_diff <- markerDiffTable(merged_cds[expressed_genes,], cth, residualModelFormulaStr = "~orig.ident + num_genes_expressed", cores = 1)
+candidate_clustering_genes <-  row.names(subset(marker_diff, qval < 0.01))
+
+
+```
+
+
+
+
